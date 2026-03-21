@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+.env
+.env.*
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+
+# Cursor / local
+.specstory/
+
+# Local vector / model caches (if introduced under repo)
+**/vector_index_cache/
+**/.embedding_cache/
+
+# --- Upstream forks (keep locally, do not commit) ---
+ref/data-juicer-agents/
+ref/docetl/
+
+# Data-Juicer upstream: only track our planner + tests/planner
+ref/data-juicer/*
+!ref/data-juicer/data_juicer/
+ref/data-juicer/data_juicer/*
+!ref/data-juicer/data_juicer/planner/
+!ref/data-juicer/data_juicer/planner/**
+
+!ref/data-juicer/tests/
+ref/data-juicer/tests/*
+!ref/data-juicer/tests/planner/
+!ref/data-juicer/tests/planner/**
