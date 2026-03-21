@@ -10,6 +10,9 @@ from data_juicer.ops.base_op import OPERATORS
 from data_juicer.planner.contracts.plan_bridge import OperatorStep, plan_operators_to_process
 from data_juicer.planner.contracts.recipe import DJExecutableConfig, validate_executable_config
 from data_juicer.planner.generate.catalog import build_operator_catalog_text, build_operator_detail_text
+from data_juicer.planner.generate.candidate_filter import detect_modalities, filter_ops_by_modality
+from data_juicer.planner.generate.candidate_ranker import rank_candidates
+from data_juicer.tools.op_search import OPSearcher
 from data_juicer.planner.generate.llm import LLMJsonClient, parse_json_object_strict
 from data_juicer.planner.generate.op_schema import (
     build_schema_block,
@@ -57,7 +60,8 @@ class NLRecipeGenerator:
     Generate a DJ executable ``dict`` from natural language + dataset hints.
 
     Steps:
-        1. ``operator_names`` via LLM (full catalog text).
+        1. ``operator_names`` via LLM (catalog text; by default **narrowed** by modality
+           rules + BM25 + must-include, then mini-catalog for small models).
         2. Fill parameters using **strict allowlists** from each operator's ``__init__``
            signature (no hallucinated keys). Default: one LLM call per operator
            (``fill_mode="per_operator"``) for smaller models.
@@ -77,6 +81,8 @@ class NLRecipeGenerator:
         extra_config: Optional[Dict[str, Any]] = None,
         fill_mode: FillMode = "per_operator",
         strict_params: bool = True,
+        narrow_candidates: bool = True,
+        candidate_top_k: int = 20,
     ) -> DJExecutableConfig:
         """
         Build executable config.
@@ -85,9 +91,29 @@ class NLRecipeGenerator:
             (single JSON for all ops; still sanitized).
         :param strict_params: If True (default), drop any param key not in the operator
             signature and validate binding to ``__init__``.
+        :param narrow_candidates: If True (default), shrink the operator catalog for the
+            selection step using modality rules + BM25 + must-include (better for small LLMs).
+        :param candidate_top_k: Max operators in the mini-catalog when ``narrow_candidates`` is True.
         """
-        catalog = build_operator_catalog_text()
         hint = dataset_hint or dataset_path
+        if narrow_candidates:
+            searcher = OPSearcher(include_formatter=False)
+            all_ops = searcher.op_records
+            modalities = detect_modalities(user_intent, hint)
+            filtered = filter_ops_by_modality(all_ops, modalities)
+            if not filtered:
+                filtered = list(all_ops)
+            top_names = rank_candidates(
+                user_intent,
+                filtered,
+                top_k=max(1, int(candidate_top_k)),
+                dataset_hint=hint,
+            )
+            if not top_names:
+                top_names = [rec.name for rec in filtered[: max(1, int(candidate_top_k))]]
+            catalog = build_operator_catalog_text(only_names=set(top_names))
+        else:
+            catalog = build_operator_catalog_text()
         sel = self._select_operators(user_intent, hint, catalog)
         if fill_mode == "per_operator":
             ops = self._fill_operators_per_operator(user_intent, hint, sel, strict_params)
