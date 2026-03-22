@@ -19,17 +19,23 @@ def build_operator_catalog_text(
     *,
     include_formatter: bool = False,
     exclude_names: Optional[Set[str]] = None,
+    only_names: Optional[Set[str]] = None,
 ) -> str:
     """
     One line per operator: ``name | type | tags | description``.
 
     Suitable for LLM prompt injection (full catalog, no vector retrieval).
+
+    :param only_names: If set, only include operators whose names appear in this set.
     """
     searcher = OPSearcher(specified_op_list=None, include_formatter=include_formatter)
     exclude_names = exclude_names or set()
+    only = only_names
     lines: List[str] = []
     for rec in searcher.op_records:
         if rec.name in exclude_names:
+            continue
+        if only is not None and rec.name not in only:
             continue
         tags = ",".join(rec.tags) if rec.tags else ""
         line = f"{rec.name} | {rec.type} | {tags} | {_compact_desc(rec.desc)}"

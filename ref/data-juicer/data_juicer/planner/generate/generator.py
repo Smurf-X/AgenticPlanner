@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+import logging
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
 
 from data_juicer.ops.base_op import OPERATORS
 
@@ -26,6 +27,13 @@ from data_juicer.planner.generate.prompts import (
     SELECT_SYSTEM,
     SELECT_USER_TEMPLATE,
 )
+
+if TYPE_CHECKING:
+    from data_juicer.planner.generate.embedding.backend import EmbeddingBackend
+
+logger = logging.getLogger(__name__)
+
+RetrievalMode = Literal["none", "bm25", "vector"]
 
 
 def assemble_executable_config(
@@ -57,15 +65,42 @@ class NLRecipeGenerator:
     Generate a DJ executable ``dict`` from natural language + dataset hints.
 
     Steps:
-        1. ``operator_names`` via LLM (full catalog text).
+        1. ``operator_names`` via LLM (optionally narrowed by retrieval).
         2. Fill parameters using **strict allowlists** from each operator's ``__init__``
            signature (no hallucinated keys). Default: one LLM call per operator
            (``fill_mode="per_operator"``) for smaller models.
         3. Sanitize (drop unknown keys), optional bind check, merge into recipe dict.
+
+    Retrieval modes:
+        - ``none``: Use full operator catalog (default, for large LLMs).
+        - ``bm25``: Use BM25 keyword matching to narrow candidates.
+        - ``vector``: Use vector embedding similarity to narrow candidates.
     """
 
-    def __init__(self, llm: LLMJsonClient) -> None:
+    def __init__(
+        self,
+        llm: LLMJsonClient,
+        *,
+        retrieval_mode: RetrievalMode = "none",
+        embedder: Optional[EmbeddingBackend] = None,
+        cache_dir: str = ".embedding_cache",
+    ) -> None:
+        """
+        Initialize generator.
+
+        :param llm: LLM client for JSON completion.
+        :param retrieval_mode: "none" | "bm25" | "vector".
+        :param embedder: Embedding backend (required for "vector" mode).
+        :param cache_dir: Cache directory for vector index.
+        """
         self._llm = llm
+        self._retrieval_mode = retrieval_mode
+        self._embedder = embedder
+        self._cache_dir = cache_dir
+        self._vector_retriever = None
+
+        if retrieval_mode == "vector" and embedder is None:
+            raise ValueError("embedder is required when retrieval_mode='vector'")
 
     def generate(
         self,
@@ -77,6 +112,7 @@ class NLRecipeGenerator:
         extra_config: Optional[Dict[str, Any]] = None,
         fill_mode: FillMode = "per_operator",
         strict_params: bool = True,
+        candidate_top_k: int = 20,
     ) -> DJExecutableConfig:
         """
         Build executable config.
@@ -85,8 +121,13 @@ class NLRecipeGenerator:
             (single JSON for all ops; still sanitized).
         :param strict_params: If True (default), drop any param key not in the operator
             signature and validate binding to ``__init__``.
+        :param candidate_top_k: Max operators in narrowed catalog (when retrieval enabled).
         """
-        catalog = build_operator_catalog_text()
+        catalog = self._build_catalog(
+            user_intent=user_intent,
+            dataset_hint=dataset_hint,
+            top_k=candidate_top_k,
+        )
         hint = dataset_hint or dataset_path
         sel = self._select_operators(user_intent, hint, catalog)
         if fill_mode == "per_operator":
@@ -103,6 +144,82 @@ class NLRecipeGenerator:
         if errors:
             raise ValueError("Generated config failed validation: " + "; ".join(errors))
         return cfg
+
+    def _build_catalog(
+        self,
+        user_intent: str,
+        dataset_hint: str,
+        top_k: int,
+    ) -> str:
+        """Build operator catalog, optionally narrowed by retrieval."""
+        if self._retrieval_mode == "none":
+            return build_operator_catalog_text()
+
+        if self._retrieval_mode == "bm25":
+            return self._build_catalog_bm25(user_intent, dataset_hint, top_k)
+
+        if self._retrieval_mode == "vector":
+            return self._build_catalog_vector(user_intent, dataset_hint, top_k)
+
+        return build_operator_catalog_text()
+
+    def _build_catalog_bm25(
+        self,
+        user_intent: str,
+        dataset_hint: str,
+        top_k: int,
+    ) -> str:
+        """Build catalog narrowed by BM25 retrieval."""
+        from data_juicer.planner.generate.candidate_filter import detect_modalities, filter_ops_by_modality
+        from data_juicer.planner.generate.candidate_ranker import rank_candidates
+        from data_juicer.tools.op_search import OPSearcher
+
+        searcher = OPSearcher(include_formatter=False)
+        all_ops = searcher.op_records
+        modalities = detect_modalities(user_intent, dataset_hint)
+        filtered = filter_ops_by_modality(all_ops, modalities)
+        if not filtered:
+            filtered = list(all_ops)
+
+        top_names = rank_candidates(
+            user_intent,
+            filtered,
+            top_k=max(1, top_k),
+            dataset_hint=dataset_hint,
+        )
+        if not top_names:
+            top_names = [rec.name for rec in filtered[: max(1, top_k)]]
+
+        logger.info(f"BM25 narrowed to {len(top_names)} operators: {top_names[:5]}...")
+        return build_operator_catalog_text(only_names=set(top_names))
+
+    def _build_catalog_vector(
+        self,
+        user_intent: str,
+        dataset_hint: str,
+        top_k: int,
+    ) -> str:
+        """Build catalog narrowed by vector retrieval."""
+        from data_juicer.planner.generate.candidate_retriever import VectorRetriever
+
+        if self._vector_retriever is None:
+            self._vector_retriever = VectorRetriever(
+                embedder=self._embedder,
+                cache_dir=self._cache_dir,
+            )
+
+        top_names = self._vector_retriever.retrieve(
+            intent=user_intent,
+            top_k=top_k,
+            dataset_hint=dataset_hint,
+        )
+
+        if not top_names:
+            logger.warning("Vector retrieval returned empty, falling back to full catalog")
+            return build_operator_catalog_text()
+
+        logger.info(f"Vector retrieval narrowed to {len(top_names)} operators: {top_names[:5]}...")
+        return build_operator_catalog_text(only_names=set(top_names))
 
     def _select_operators(self, intent: str, dataset_hint: str, catalog: str) -> List[str]:
         user = SELECT_USER_TEMPLATE.format(
