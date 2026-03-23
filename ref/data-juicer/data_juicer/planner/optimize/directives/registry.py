@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional
 
 from data_juicer.planner.optimize.directives.adjust_params import BumpMinLenDirective
 from data_juicer.planner.optimize.directives.adjust_threshold import (
@@ -12,7 +12,13 @@ from data_juicer.planner.optimize.directives.adjust_threshold import (
     TightenFiltersDirective,
 )
 from data_juicer.planner.optimize.directives.base import Directive
-from data_juicer.planner.optimize.directives.gleaning import (
+from data_juicer.planner.optimize.directives.change_model import (
+    LLMChangeModelDirective,
+    SwapApiModelDirective,
+    SwapModelByTypeDirective,
+    SwapSingleOpModelDirective,
+)
+from data_juicer.optimize.directives.gleaning import (
     AddGleaningDirective,
     RemoveGleaningDirective,
 )
@@ -24,7 +30,6 @@ from data_juicer.planner.optimize.directives.rewrite_prompt import (
     AddFewShotExamplesDirective,
     RewritePromptDirective,
 )
-from data_juicer.planner.optimize.directives.swap_model import SwapApiModelDirective
 
 # Core registry with singleton instances
 DIRECTIVE_REGISTRY: Dict[str, Directive] = {}
@@ -59,9 +64,78 @@ def register_directive(directive: Directive, name: Optional[str] = None) -> str:
     return key
 
 
+# ============================================================================
+# Model Change Directive Registration Functions
+# ============================================================================
+
+def register_single_op_model_directive(
+    op_name: str,
+    from_model: str,
+    to_model: str,
+    name: Optional[str] = None,
+) -> str:
+    """
+    Register a directive to change model for a specific operator.
+
+    Args:
+        op_name: Name of the operator to modify
+        from_model: Source model name (only replace if matches)
+        to_model: Target model name
+        name: Custom registry name
+
+    Returns:
+        The directive name
+
+    Example:
+        register_single_op_model_directive(
+            op_name="llm_filter",
+            from_model="gpt-4o",
+            to_model="gpt-4o-mini",
+        )
+    """
+    d = SwapSingleOpModelDirective(op_name, from_model, to_model)
+    key = name or f"swap_model:{op_name}:{from_model}->{to_model}"
+    DIRECTIVE_REGISTRY[key] = d
+    return key
+
+
+def register_model_by_type_directive(
+    op_type: str,
+    from_model: str,
+    to_model: str,
+    name: Optional[str] = None,
+) -> str:
+    """
+    Register a directive to change model for all operators of a type.
+
+    Args:
+        op_type: Operator type (e.g., "filter", "mapper")
+        from_model: Source model name
+        to_model: Target model name
+        name: Custom registry name
+
+    Returns:
+        The directive name
+
+    Example:
+        register_model_by_type_directive(
+            op_type="filter",
+            from_model="gpt-4o",
+            to_model="gpt-4o-mini",
+        )
+    """
+    d = SwapModelByTypeDirective(op_type, from_model, to_model)
+    key = name or f"swap_model_by_type:{op_type}:{from_model}->{to_model}"
+    DIRECTIVE_REGISTRY[key] = d
+    return key
+
+
 def register_swap_model_directive(from_model: str, to_model: str) -> str:
     """
-    Register a parameterized model swap directive.
+    Register a global model swap directive (replaces ALL matching models).
+
+    WARNING: This affects all operators. Consider using
+    register_single_op_model_directive for finer control.
 
     Args:
         from_model: Source model name
@@ -75,6 +149,45 @@ def register_swap_model_directive(from_model: str, to_model: str) -> str:
     DIRECTIVE_REGISTRY[name] = d
     return name
 
+
+def register_llm_change_model_directive(
+    op_name: str,
+    allowed_models: List[str],
+    optimize_goal: str = "balanced",
+    llm_client: Optional[Any] = None,
+    name: Optional[str] = None,
+) -> str:
+    """
+    Register an LLM-based model change directive.
+
+    The LLM will analyze the operator and recommend the best model.
+
+    Args:
+        op_name: Name of the operator to modify
+        allowed_models: List of allowed model choices
+        optimize_goal: "cost", "quality", or "balanced"
+        llm_client: LLM client for making recommendations
+        name: Custom registry name
+
+    Returns:
+        The directive name
+
+    Example:
+        register_llm_change_model_directive(
+            op_name="complex_analysis",
+            allowed_models=["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"],
+            optimize_goal="balanced",
+        )
+    """
+    d = LLMChangeModelDirective(op_name, allowed_models, optimize_goal, llm_client)
+    key = name or f"llm_change_model:{op_name}"
+    DIRECTIVE_REGISTRY[key] = d
+    return key
+
+
+# ============================================================================
+# Other Directive Registration Functions
+# ============================================================================
 
 def register_threshold_directive(
     op_name: str,
@@ -173,6 +286,10 @@ def register_few_shot_directive(
     DIRECTIVE_REGISTRY[key] = d
     return key
 
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
 
 def get_directive(name: str) -> Optional[Directive]:
     """Get a directive by name."""

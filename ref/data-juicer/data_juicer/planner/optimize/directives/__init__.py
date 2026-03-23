@@ -8,6 +8,13 @@ from data_juicer.planner.optimize.directives.adjust_threshold import (
     TightenFiltersDirective,
 )
 from data_juicer.planner.optimize.directives.base import Directive, DirectiveResult
+from data_juicer.planner.optimize.directives.change_model import (
+    LLMChangeModelDirective,
+    MODEL_INFO,
+    SwapApiModelDirective,
+    SwapModelByTypeDirective,
+    SwapSingleOpModelDirective,
+)
 from data_juicer.planner.optimize.directives.gleaning import (
     AddGleaningDirective,
     RemoveGleaningDirective,
@@ -15,7 +22,6 @@ from data_juicer.planner.optimize.directives.gleaning import (
 from data_juicer.planner.optimize.directives.remove_redundant import (
     RemoveRedundantOpDirective,
 )
-from data_juicer.planner.optimize.directives.reorder import ReorderFiltersFirstDirective
 from data_juicer.planner.optimize.directives.registry import (
     DIRECTIVE_REGISTRY,
     clear_dynamic_directives,
@@ -24,15 +30,18 @@ from data_juicer.planner.optimize.directives.registry import (
     register_directive,
     register_few_shot_directive,
     register_gleaning_directive,
+    register_llm_change_model_directive,
+    register_model_by_type_directive,
     register_prompt_rewrite_directive,
+    register_single_op_model_directive,
     register_swap_model_directive,
     register_threshold_directive,
 )
+from data_juicer.planner.optimize.directives.reorder import ReorderFiltersFirstDirective
 from data_juicer.planner.optimize.directives.rewrite_prompt import (
     AddFewShotExamplesDirective,
     RewritePromptDirective,
 )
-from data_juicer.planner.optimize.directives.swap_model import SwapApiModelDirective
 
 __all__ = [
     # Base classes
@@ -45,21 +54,32 @@ __all__ = [
     "RemoveRedundantOpDirective",
     "ReorderFiltersFirstDirective",
     "TightenFiltersDirective",
-    # LLM operator directives
+    # LLM operator directives - prompt
     "AddFewShotExamplesDirective",
+    "RewritePromptDirective",
+    # LLM operator directives - gleaning
     "AddGleaningDirective",
     "RemoveGleaningDirective",
-    "RewritePromptDirective",
-    "SwapApiModelDirective",
+    # LLM operator directives - model
+    "SwapApiModelDirective",  # Global swap (use with caution)
+    "SwapSingleOpModelDirective",  # Single operator swap
+    "SwapModelByTypeDirective",  # Swap by operator type
+    "LLMChangeModelDirective",  # LLM-recommended model change
+    "MODEL_INFO",
     # Registry
     "DIRECTIVE_REGISTRY",
     "clear_dynamic_directives",
     "get_directive",
     "list_directive_names",
     "register_directive",
+    # Registration functions - model
+    "register_single_op_model_directive",
+    "register_model_by_type_directive",
+    "register_swap_model_directive",
+    "register_llm_change_model_directive",
+    # Registration functions - other
     "register_few_shot_directive",
     "register_gleaning_directive",
     "register_prompt_rewrite_directive",
-    "register_swap_model_directive",
     "register_threshold_directive",
 ]
