@@ -1,16 +1,65 @@
 # -*- coding: utf-8 -*-
+"""Directives for pipeline optimization."""
+
 from data_juicer.planner.optimize.directives.adjust_params import BumpMinLenDirective
+from data_juicer.planner.optimize.directives.adjust_threshold import (
+    AdjustThresholdDirective,
+    LoosenFiltersDirective,
+    TightenFiltersDirective,
+)
 from data_juicer.planner.optimize.directives.base import Directive, DirectiveResult
+from data_juicer.planner.optimize.directives.gleaning import (
+    AddGleaningDirective,
+    RemoveGleaningDirective,
+)
+from data_juicer.planner.optimize.directives.remove_redundant import (
+    RemoveRedundantOpDirective,
+)
 from data_juicer.planner.optimize.directives.reorder import ReorderFiltersFirstDirective
-from data_juicer.planner.optimize.directives.registry import DIRECTIVE_REGISTRY, list_directive_names
+from data_juicer.planner.optimize.directives.registry import (
+    DIRECTIVE_REGISTRY,
+    clear_dynamic_directives,
+    get_directive,
+    list_directive_names,
+    register_directive,
+    register_few_shot_directive,
+    register_gleaning_directive,
+    register_prompt_rewrite_directive,
+    register_swap_model_directive,
+    register_threshold_directive,
+)
+from data_juicer.planner.optimize.directives.rewrite_prompt import (
+    AddFewShotExamplesDirective,
+    RewritePromptDirective,
+)
 from data_juicer.planner.optimize.directives.swap_model import SwapApiModelDirective
 
 __all__ = [
-    "BumpMinLenDirective",
-    "DIRECTIVE_REGISTRY",
+    # Base classes
     "Directive",
     "DirectiveResult",
+    # Non-LLM operator directives
+    "AdjustThresholdDirective",
+    "BumpMinLenDirective",
+    "LoosenFiltersDirective",
+    "RemoveRedundantOpDirective",
     "ReorderFiltersFirstDirective",
+    "TightenFiltersDirective",
+    # LLM operator directives
+    "AddFewShotExamplesDirective",
+    "AddGleaningDirective",
+    "RemoveGleaningDirective",
+    "RewritePromptDirective",
     "SwapApiModelDirective",
+    # Registry
+    "DIRECTIVE_REGISTRY",
+    "clear_dynamic_directives",
+    "get_directive",
     "list_directive_names",
+    "register_directive",
+    "register_few_shot_directive",
+    "register_gleaning_directive",
+    "register_prompt_rewrite_directive",
+    "register_swap_model_directive",
+    "register_threshold_directive",
 ]
