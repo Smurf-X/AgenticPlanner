@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from data_juicer.planner.contracts.recipe import DJExecutableConfig
 from data_juicer.planner.optimize.directives.base import Directive, DirectiveResult
+from data_juicer.planner.optimize.op_locator import ProcessIndex
+
+if TYPE_CHECKING:
+    pass
 
 
 # Known threshold parameters for common filter operators
@@ -44,31 +47,32 @@ _THRESHOLD_PARAMS: Dict[str, Dict[str, Tuple[str, float]]] = {
 
 class AdjustThresholdDirective(Directive):
     """
-    Adjust a numeric threshold parameter on a specific operator.
+    Adjust a numeric threshold parameter on all matching operators.
 
-    This is a parameterized directive that can be registered multiple times
-    with different configurations.
+    This directive finds all operators of the specified type and adjusts
+    the specified parameter by the given delta.
+
+    For single-operator adjustment, use AdjustSingleThresholdDirective
+    with an OpLocator.
     """
 
     name = "adjust_threshold"
 
     def __init__(
         self,
-        op_name: str,
+        op_type: str,
         param_name: str,
         delta: float,
         direction: Optional[str] = None,
     ) -> None:
         """
-        Initialize the threshold adjustment directive.
-
         Args:
-            op_name: Name of the operator (e.g., "text_length_filter")
+            op_type: Type of operator to adjust (e.g., "text_length_filter")
             param_name: Name of the parameter to adjust (e.g., "min_len")
             delta: Amount to adjust (positive value)
             direction: "increase" or "decrease"; if None, uses known defaults
         """
-        self.op_name = op_name
+        self.op_type = op_type
         self.param_name = param_name
         self.delta = abs(delta)
         self._direction = direction
@@ -78,7 +82,7 @@ class AdjustThresholdDirective(Directive):
         if self._direction:
             return self._direction
         # Look up known threshold info
-        op_info = _THRESHOLD_PARAMS.get(self.op_name, {})
+        op_info = _THRESHOLD_PARAMS.get(self.op_type, {})
         if self.param_name in op_info:
             return op_info[self.param_name][0]
         # Default: increase for "min_*", decrease for "max_*"
@@ -86,9 +90,14 @@ class AdjustThresholdDirective(Directive):
             return "increase"
         return "decrease"
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
         proc = before.get("process")
+
         if not isinstance(proc, list):
             return DirectiveResult(
                 ok=True,
@@ -99,38 +108,35 @@ class AdjustThresholdDirective(Directive):
                 config_after=before,
             )
 
-        after = deepcopy(before)
+        after = self._clone(before)
         direction = self._get_direction()
         applied = False
         adjustments: List[Dict[str, Any]] = []
+        affected_hashes: List[str] = []
 
         new_proc = []
-        for step in after.get("process", []):
-            if not isinstance(step, dict) or len(step) != 1:
-                new_proc.append(step)
-                continue
+        for i, step in enumerate(after.get("process", [])):
+            op_name, params = self._get_op_params(step)
 
-            name = next(iter(step.keys()))
-            params = step[name]
-
-            if name == self.op_name and isinstance(params, dict):
-                if self.param_name in params:
-                    old_val = params[self.param_name]
-                    if isinstance(old_val, (int, float)):
-                        new_params = dict(params)
-                        if direction == "increase":
-                            new_params[self.param_name] = old_val + self.delta
-                        else:
-                            new_params[self.param_name] = max(0, old_val - self.delta)
-                        new_proc.append({name: new_params})
-                        applied = True
-                        adjustments.append({
-                            "op": name,
-                            "param": self.param_name,
-                            "old": old_val,
-                            "new": new_params[self.param_name],
-                        })
-                        continue
+            if op_name == self.op_type and self.param_name in params:
+                old_val = params[self.param_name]
+                if isinstance(old_val, (int, float)):
+                    new_params = dict(params)
+                    if direction == "increase":
+                        new_params[self.param_name] = old_val + self.delta
+                    else:
+                        new_params[self.param_name] = max(0, old_val - self.delta)
+                    new_proc.append({op_name: new_params})
+                    applied = True
+                    adjustments.append({
+                        "identity_hash": index.identities[i].identity_hash if i < len(index.identities) else None,
+                        "param": self.param_name,
+                        "old": old_val,
+                        "new": new_params[self.param_name],
+                    })
+                    if i < len(index.identities):
+                        affected_hashes.append(index.identities[i].identity_hash)
+                    continue
 
             new_proc.append(step)
 
@@ -140,10 +146,15 @@ class AdjustThresholdDirective(Directive):
             ok=True,
             applied=applied,
             directive_name=self.name,
-            message=f"adjusted {self.op_name}.{self.param_name}" if applied else "no matching operator/param",
+            message=f"adjusted {self.op_type}.{self.param_name}" if applied else "no matching operator/param",
             config_before=before,
             config_after=after,
-            details={"adjustments": adjustments, "direction": direction, "delta": self.delta},
+            details={
+                "adjustments": adjustments,
+                "direction": direction,
+                "delta": self.delta,
+                "affected_identity_hashes": affected_hashes,
+            },
         )
 
 
@@ -163,9 +174,14 @@ class TightenFiltersDirective(Directive):
         """
         self.intensity = max(0.0, min(1.0, intensity))
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
         proc = before.get("process")
+
         if not isinstance(proc, list) or not proc:
             return DirectiveResult(
                 ok=True,
@@ -176,21 +192,13 @@ class TightenFiltersDirective(Directive):
                 config_after=before,
             )
 
-        after = deepcopy(before)
+        after = self._clone(before)
         applied = False
         adjustments: List[Dict[str, Any]] = []
 
         new_proc = []
-        for step in after.get("process", []):
-            if not isinstance(step, dict) or len(step) != 1:
-                new_proc.append(step)
-                continue
-
-            op_name = next(iter(step.keys()))
-            params = step.get(op_name, {})
-            if not isinstance(params, dict):
-                new_proc.append(step)
-                continue
+        for i, step in enumerate(after.get("process", [])):
+            op_name, params = self._get_op_params(step)
 
             op_info = _THRESHOLD_PARAMS.get(op_name)
             if not op_info:
@@ -209,7 +217,7 @@ class TightenFiltersDirective(Directive):
                         else:
                             new_params[param_name] = max(0, old_val - delta)
                         adjustments.append({
-                            "op": op_name,
+                            "identity_hash": index.identities[i].identity_hash if i < len(index.identities) else None,
                             "param": param_name,
                             "old": old_val,
                             "new": new_params[param_name],
@@ -245,11 +253,20 @@ class LoosenFiltersDirective(Directive):
     name = "loosen_filters"
 
     def __init__(self, intensity: float = 0.1) -> None:
+        """
+        Args:
+            intensity: Multiplier for adjustment amounts (0.0-1.0)
+        """
         self.intensity = max(0.0, min(1.0, intensity))
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
         proc = before.get("process")
+
         if not isinstance(proc, list) or not proc:
             return DirectiveResult(
                 ok=True,
@@ -260,21 +277,13 @@ class LoosenFiltersDirective(Directive):
                 config_after=before,
             )
 
-        after = deepcopy(before)
+        after = self._clone(before)
         applied = False
         adjustments: List[Dict[str, Any]] = []
 
         new_proc = []
-        for step in after.get("process", []):
-            if not isinstance(step, dict) or len(step) != 1:
-                new_proc.append(step)
-                continue
-
-            op_name = next(iter(step.keys()))
-            params = step.get(op_name, {})
-            if not isinstance(params, dict):
-                new_proc.append(step)
-                continue
+        for i, step in enumerate(after.get("process", [])):
+            op_name, params = self._get_op_params(step)
 
             op_info = _THRESHOLD_PARAMS.get(op_name)
             if not op_info:
@@ -294,7 +303,7 @@ class LoosenFiltersDirective(Directive):
                         else:
                             new_params[param_name] = old_val + delta
                         adjustments.append({
-                            "op": op_name,
+                            "identity_hash": index.identities[i].identity_hash if i < len(index.identities) else None,
                             "param": param_name,
                             "old": old_val,
                             "new": new_params[param_name],

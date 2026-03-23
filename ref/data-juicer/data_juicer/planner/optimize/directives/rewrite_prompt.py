@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from data_juicer.planner.contracts.recipe import DJExecutableConfig
 from data_juicer.planner.optimize.directives.base import Directive, DirectiveResult
+from data_juicer.planner.optimize.op_locator import OpLocator, ProcessIndex
+
+if TYPE_CHECKING:
+    pass
 
 
 # Operators that have a 'prompt' parameter
@@ -23,60 +27,59 @@ class RewritePromptDirective(Directive):
     """
     Rewrite the prompt of an LLM-based operator.
 
-    This directive can either:
-    1. Apply a static prompt template transformation
-    2. Use an LLM to improve the prompt (future: requires LLM client)
+    Uses OpLocator for stable identification across pipeline transformations.
 
-    For v1, we support template-based transformations.
+    Example:
+        # Rewrite prompt for an llm_filter with specific content
+        locator = OpLocator(op_type="llm_filter", param_match={"prompt": "contains:summarize"})
+        directive = RewritePromptDirective(locator, prompt_suffix="Be concise.")
     """
 
     name = "rewrite_prompt"
 
     def __init__(
         self,
-        op_index: int,
+        locator: OpLocator,
         new_prompt: Optional[str] = None,
         prompt_suffix: Optional[str] = None,
         clarify_instruction: Optional[str] = None,
     ) -> None:
         """
         Args:
-            op_index: Index of the operator in the process list
+            locator: Locator for the target operator
             new_prompt: Replace the entire prompt with this
             prompt_suffix: Append this to the existing prompt
             clarify_instruction: Prepend clarification to the prompt
         """
-        self.op_index = op_index
+        self.locator = locator
         self.new_prompt = new_prompt
         self.prompt_suffix = prompt_suffix
         self.clarify_instruction = clarify_instruction
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
-        proc = before.get("process")
-        if not isinstance(proc, list):
-            return DirectiveResult(
-                ok=True,
-                applied=False,
-                directive_name=self.name,
-                message="no process",
-                config_before=before,
-                config_after=before,
-            )
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
 
-        if self.op_index < 0 or self.op_index >= len(proc):
+        # Find target operator
+        target_idx = self.locator.find_index(index.identities)
+        if target_idx is None:
             return DirectiveResult(
                 ok=False,
                 applied=False,
                 directive_name=self.name,
-                message=f"invalid op_index {self.op_index}",
+                message="target operator not found",
                 config_before=before,
                 config_after=before,
             )
 
-        after = deepcopy(before)
-        step = after["process"][self.op_index]
-        if not isinstance(step, dict) or len(step) != 1:
+        after = self._clone(before)
+        step = after["process"][target_idx]
+
+        op_name, params = self._get_op_params(step)
+        if op_name is None:
             return DirectiveResult(
                 ok=True,
                 applied=False,
@@ -85,11 +88,6 @@ class RewritePromptDirective(Directive):
                 config_before=before,
                 config_after=before,
             )
-
-        op_name = next(iter(step.keys()))
-        params = step.get(op_name, {})
-        if not isinstance(params, dict):
-            params = {}
 
         # Check if this operator has a prompt parameter
         prompt_key = _LLM_PROMPT_OPS.get(op_name, "prompt")
@@ -100,7 +98,7 @@ class RewritePromptDirective(Directive):
                 directive_name=self.name,
                 message=f"operator {op_name} has no prompt parameter",
                 config_before=before,
-                config_after=before,
+                config_after=after,
             )
 
         old_prompt = params.get(prompt_key, "")
@@ -119,10 +117,13 @@ class RewritePromptDirective(Directive):
                 directive_name=self.name,
                 message="no transformation specified",
                 config_before=before,
-                config_after=before,
+                config_after=after,
             )
 
-        after["process"][self.op_index] = {op_name: new_params}
+        after["process"][target_idx] = {op_name: new_params}
+
+        # Get identity hash for traceability
+        identity = index.get_by_index(target_idx)
 
         return DirectiveResult(
             ok=True,
@@ -132,53 +133,65 @@ class RewritePromptDirective(Directive):
             config_before=before,
             config_after=after,
             details={
-                "op_index": self.op_index,
-                "op_name": op_name,
+                "identity_hash": identity.identity_hash if identity else None,
+                "op_type": op_name,
                 "old_prompt_preview": old_prompt[:100] + "..." if len(old_prompt) > 100 else old_prompt,
             },
         )
 
 
 class AddFewShotExamplesDirective(Directive):
-    """Add few-shot examples to an LLM operator's prompt."""
+    """
+    Add few-shot examples to an LLM operator's prompt.
+
+    Uses OpLocator for stable identification.
+    """
 
     name = "add_few_shot_examples"
 
-    def __init__(self, op_index: int, examples: List[Dict[str, str]]) -> None:
+    def __init__(self, locator: OpLocator, examples: List[Dict[str, str]]) -> None:
         """
         Args:
-            op_index: Index of the operator in the process list
+            locator: Locator for the target operator
             examples: List of example dicts with 'input' and 'output' keys
         """
-        self.op_index = op_index
+        self.locator = locator
         self.examples = examples
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
-        proc = before.get("process")
-        if not isinstance(proc, list) or not self.examples:
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
+
+        if not self.examples:
             return DirectiveResult(
                 ok=True,
                 applied=False,
                 directive_name=self.name,
-                message="no process or no examples",
+                message="no examples provided",
                 config_before=before,
                 config_after=before,
             )
 
-        if self.op_index < 0 or self.op_index >= len(proc):
+        # Find target operator
+        target_idx = self.locator.find_index(index.identities)
+        if target_idx is None:
             return DirectiveResult(
                 ok=False,
                 applied=False,
                 directive_name=self.name,
-                message=f"invalid op_index {self.op_index}",
+                message="target operator not found",
                 config_before=before,
                 config_after=before,
             )
 
-        after = deepcopy(before)
-        step = after["process"][self.op_index]
-        if not isinstance(step, dict) or len(step) != 1:
+        after = self._clone(before)
+        step = after["process"][target_idx]
+
+        op_name, params = self._get_op_params(step)
+        if op_name is None:
             return DirectiveResult(
                 ok=True,
                 applied=False,
@@ -187,11 +200,6 @@ class AddFewShotExamplesDirective(Directive):
                 config_before=before,
                 config_after=before,
             )
-
-        op_name = next(iter(step.keys()))
-        params = step.get(op_name, {})
-        if not isinstance(params, dict):
-            params = {}
 
         prompt_key = _LLM_PROMPT_OPS.get(op_name, "prompt")
         old_prompt = params.get(prompt_key, "")
@@ -207,7 +215,9 @@ class AddFewShotExamplesDirective(Directive):
             examples_text += f"Output: {out}\n"
 
         new_params[prompt_key] = old_prompt + examples_text
-        after["process"][self.op_index] = {op_name: new_params}
+        after["process"][target_idx] = {op_name: new_params}
+
+        identity = index.get_by_index(target_idx)
 
         return DirectiveResult(
             ok=True,
@@ -216,5 +226,8 @@ class AddFewShotExamplesDirective(Directive):
             message=f"added {len(self.examples)} example(s) to {op_name}",
             config_before=before,
             config_after=after,
-            details={"op_index": self.op_index, "examples_count": len(self.examples)},
+            details={
+                "identity_hash": identity.identity_hash if identity else None,
+                "examples_count": len(self.examples),
+            },
         )

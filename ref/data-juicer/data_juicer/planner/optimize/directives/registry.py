@@ -18,7 +18,7 @@ from data_juicer.planner.optimize.directives.change_model import (
     SwapModelByTypeDirective,
     SwapSingleOpModelDirective,
 )
-from data_juicer.optimize.directives.gleaning import (
+from data_juicer.planner.optimize.directives.gleaning import (
     AddGleaningDirective,
     RemoveGleaningDirective,
 )
@@ -30,6 +30,7 @@ from data_juicer.planner.optimize.directives.rewrite_prompt import (
     AddFewShotExamplesDirective,
     RewritePromptDirective,
 )
+from data_juicer.planner.optimize.op_locator import OpLocator
 
 # Core registry with singleton instances
 DIRECTIVE_REGISTRY: Dict[str, Directive] = {}
@@ -69,7 +70,7 @@ def register_directive(directive: Directive, name: Optional[str] = None) -> str:
 # ============================================================================
 
 def register_single_op_model_directive(
-    op_name: str,
+    locator: OpLocator,
     from_model: str,
     to_model: str,
     name: Optional[str] = None,
@@ -78,23 +79,16 @@ def register_single_op_model_directive(
     Register a directive to change model for a specific operator.
 
     Args:
-        op_name: Name of the operator to modify
+        locator: Locator for the target operator
         from_model: Source model name (only replace if matches)
         to_model: Target model name
         name: Custom registry name
 
     Returns:
         The directive name
-
-    Example:
-        register_single_op_model_directive(
-            op_name="llm_filter",
-            from_model="gpt-4o",
-            to_model="gpt-4o-mini",
-        )
     """
-    d = SwapSingleOpModelDirective(op_name, from_model, to_model)
-    key = name or f"swap_model:{op_name}:{from_model}->{to_model}"
+    d = SwapSingleOpModelDirective(locator, from_model, to_model)
+    key = name or f"swap_model:{from_model}->{to_model}"
     DIRECTIVE_REGISTRY[key] = d
     return key
 
@@ -116,13 +110,6 @@ def register_model_by_type_directive(
 
     Returns:
         The directive name
-
-    Example:
-        register_model_by_type_directive(
-            op_type="filter",
-            from_model="gpt-4o",
-            to_model="gpt-4o-mini",
-        )
     """
     d = SwapModelByTypeDirective(op_type, from_model, to_model)
     key = name or f"swap_model_by_type:{op_type}:{from_model}->{to_model}"
@@ -151,7 +138,7 @@ def register_swap_model_directive(from_model: str, to_model: str) -> str:
 
 
 def register_llm_change_model_directive(
-    op_name: str,
+    locator: OpLocator,
     allowed_models: List[str],
     optimize_goal: str = "balanced",
     llm_client: Optional[Any] = None,
@@ -163,7 +150,7 @@ def register_llm_change_model_directive(
     The LLM will analyze the operator and recommend the best model.
 
     Args:
-        op_name: Name of the operator to modify
+        locator: Locator for the target operator
         allowed_models: List of allowed model choices
         optimize_goal: "cost", "quality", or "balanced"
         llm_client: LLM client for making recommendations
@@ -171,52 +158,19 @@ def register_llm_change_model_directive(
 
     Returns:
         The directive name
-
-    Example:
-        register_llm_change_model_directive(
-            op_name="complex_analysis",
-            allowed_models=["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"],
-            optimize_goal="balanced",
-        )
     """
-    d = LLMChangeModelDirective(op_name, allowed_models, optimize_goal, llm_client)
-    key = name or f"llm_change_model:{op_name}"
+    d = LLMChangeModelDirective(locator, allowed_models, optimize_goal, llm_client)
+    key = name or "llm_change_model"
     DIRECTIVE_REGISTRY[key] = d
     return key
 
 
 # ============================================================================
-# Other Directive Registration Functions
+# Prompt Directive Registration Functions
 # ============================================================================
-
-def register_threshold_directive(
-    op_name: str,
-    param_name: str,
-    delta: float,
-    direction: Optional[str] = None,
-    name: Optional[str] = None,
-) -> str:
-    """
-    Register a parameterized threshold adjustment directive.
-
-    Args:
-        op_name: Operator name
-        param_name: Parameter to adjust
-        delta: Adjustment amount
-        direction: "increase" or "decrease"
-        name: Custom registry name
-
-    Returns:
-        The directive name
-    """
-    d = AdjustThresholdDirective(op_name, param_name, delta, direction)
-    key = name or f"adjust_{op_name}_{param_name}"
-    DIRECTIVE_REGISTRY[key] = d
-    return key
-
 
 def register_prompt_rewrite_directive(
-    op_index: int,
+    locator: OpLocator,
     new_prompt: Optional[str] = None,
     prompt_suffix: Optional[str] = None,
     clarify_instruction: Optional[str] = None,
@@ -226,7 +180,7 @@ def register_prompt_rewrite_directive(
     Register a prompt rewrite directive for a specific operator.
 
     Args:
-        op_index: Index of the operator in process list
+        locator: Locator for the target operator
         new_prompt: Replace prompt entirely
         prompt_suffix: Append to prompt
         clarify_instruction: Prepend clarification
@@ -235,14 +189,40 @@ def register_prompt_rewrite_directive(
     Returns:
         The directive name
     """
-    d = RewritePromptDirective(op_index, new_prompt, prompt_suffix, clarify_instruction)
-    key = name or f"rewrite_prompt_op{op_index}"
+    d = RewritePromptDirective(locator, new_prompt, prompt_suffix, clarify_instruction)
+    key = name or "rewrite_prompt"
     DIRECTIVE_REGISTRY[key] = d
     return key
 
 
+def register_few_shot_directive(
+    locator: OpLocator,
+    examples: List[Dict[str, str]],
+    name: Optional[str] = None,
+) -> str:
+    """
+    Register a few-shot examples directive.
+
+    Args:
+        locator: Locator for the target operator
+        examples: List of {input, output} example dicts
+        name: Custom registry name
+
+    Returns:
+        The directive name
+    """
+    d = AddFewShotExamplesDirective(locator, examples)
+    key = name or "add_few_shot_examples"
+    DIRECTIVE_REGISTRY[key] = d
+    return key
+
+
+# ============================================================================
+# Gleaning Directive Registration Functions
+# ============================================================================
+
 def register_gleaning_directive(
-    op_index: int,
+    locator: OpLocator,
     max_rounds: int = 2,
     gleaning_prompt: Optional[str] = None,
     name: Optional[str] = None,
@@ -251,7 +231,7 @@ def register_gleaning_directive(
     Register a gleaning directive for a specific operator.
 
     Args:
-        op_index: Index of the operator
+        locator: Locator for the target operator
         max_rounds: Maximum gleaning rounds
         gleaning_prompt: Custom gleaning prompt
         name: Custom registry name
@@ -259,30 +239,38 @@ def register_gleaning_directive(
     Returns:
         The directive name
     """
-    d = AddGleaningDirective(op_index, max_rounds, gleaning_prompt)
-    key = name or f"add_gleaning_op{op_index}"
+    d = AddGleaningDirective(locator, max_rounds, gleaning_prompt)
+    key = name or "add_gleaning"
     DIRECTIVE_REGISTRY[key] = d
     return key
 
 
-def register_few_shot_directive(
-    op_index: int,
-    examples: List[Dict[str, str]],
+# ============================================================================
+# Threshold Directive Registration Functions
+# ============================================================================
+
+def register_threshold_directive(
+    op_type: str,
+    param_name: str,
+    delta: float,
+    direction: Optional[str] = None,
     name: Optional[str] = None,
 ) -> str:
     """
-    Register a few-shot examples directive.
+    Register a parameterized threshold adjustment directive.
 
     Args:
-        op_index: Index of the operator
-        examples: List of {input, output} example dicts
+        op_type: Operator type
+        param_name: Parameter to adjust
+        delta: Adjustment amount
+        direction: "increase" or "decrease"
         name: Custom registry name
 
     Returns:
         The directive name
     """
-    d = AddFewShotExamplesDirective(op_index, examples)
-    key = name or f"add_fewshot_op{op_index}"
+    d = AdjustThresholdDirective(op_type, param_name, delta, direction)
+    key = name or f"adjust_{op_type}_{param_name}"
     DIRECTIVE_REGISTRY[key] = d
     return key
 
@@ -307,7 +295,6 @@ def clear_dynamic_directives() -> None:
 
     Useful for testing or resetting state.
     """
-    # Keep only core directives
     core_names = {
         "reorder_filters_first",
         "remove_redundant_ops",

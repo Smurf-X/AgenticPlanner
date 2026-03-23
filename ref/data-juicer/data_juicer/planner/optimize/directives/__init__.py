@@ -61,10 +61,10 @@ __all__ = [
     "AddGleaningDirective",
     "RemoveGleaningDirective",
     # LLM operator directives - model
-    "SwapApiModelDirective",  # Global swap (use with caution)
-    "SwapSingleOpModelDirective",  # Single operator swap
-    "SwapModelByTypeDirective",  # Swap by operator type
-    "LLMChangeModelDirective",  # LLM-recommended model change
+    "SwapApiModelDirective",
+    "SwapSingleOpModelDirective",
+    "SwapModelByTypeDirective",
+    "LLMChangeModelDirective",
     "MODEL_INFO",
     # Registry
     "DIRECTIVE_REGISTRY",
@@ -72,12 +72,11 @@ __all__ = [
     "get_directive",
     "list_directive_names",
     "register_directive",
-    # Registration functions - model
+    # Registration functions
     "register_single_op_model_directive",
     "register_model_by_type_directive",
     "register_swap_model_directive",
     "register_llm_change_model_directive",
-    # Registration functions - other
     "register_few_shot_directive",
     "register_gleaning_directive",
     "register_prompt_rewrite_directive",

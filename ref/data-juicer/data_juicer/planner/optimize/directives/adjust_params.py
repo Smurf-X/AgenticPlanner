@@ -3,21 +3,40 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
+from typing import TYPE_CHECKING
 
 from data_juicer.planner.contracts.recipe import DJExecutableConfig
 from data_juicer.planner.optimize.directives.base import Directive, DirectiveResult
+from data_juicer.planner.optimize.op_locator import ProcessIndex
+
+if TYPE_CHECKING:
+    pass
 
 
 class BumpMinLenDirective(Directive):
+    """
+    Bump the min_len parameter on text_length_filter operators.
+
+    This is a convenience directive for a common adjustment.
+    """
+
     name = "bump_text_length_min_len"
 
     def __init__(self, delta: int = 10) -> None:
+        """
+        Args:
+            delta: Amount to increase min_len by
+        """
         self.delta = int(delta)
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
         proc = before.get("process")
+
         if not isinstance(proc, list):
             return DirectiveResult(
                 ok=True,
@@ -27,30 +46,36 @@ class BumpMinLenDirective(Directive):
                 config_before=before,
                 config_after=before,
             )
-        after = deepcopy(before)
+
+        after = self._clone(before)
         applied = False
+        affected_hashes = []
+
         new_proc = []
-        for step in after["process"]:
-            if not isinstance(step, dict) or len(step) != 1:
-                new_proc.append(step)
-                continue
-            name = next(iter(step.keys()))
-            params = step[name]
-            if name == "text_length_filter" and isinstance(params, dict):
+        for i, step in enumerate(after["process"]):
+            op_name, params = self._get_op_params(step)
+
+            if op_name == "text_length_filter":
                 cur = params.get("min_len")
                 if isinstance(cur, (int, float)):
-                    params = dict(params)
-                    params["min_len"] = int(cur) + self.delta
-                    new_proc.append({name: params})
+                    new_params = dict(params)
+                    new_params["min_len"] = int(cur) + self.delta
+                    new_proc.append({op_name: new_params})
                     applied = True
+                    if i < len(index.identities):
+                        affected_hashes.append(index.identities[i].identity_hash)
                     continue
+
             new_proc.append(step)
+
         after["process"] = new_proc
+
         return DirectiveResult(
             ok=True,
             applied=applied,
             directive_name=self.name,
-            message="bump min_len" if applied else "no text_length_filter with min_len",
+            message="bumped min_len" if applied else "no text_length_filter with min_len",
             config_before=before,
             config_after=after,
+            details={"delta": self.delta, "affected_identity_hashes": affected_hashes},
         )

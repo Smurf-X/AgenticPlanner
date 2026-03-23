@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from typing import Any, Dict, List, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Set
 
 from data_juicer.planner.contracts.recipe import DJExecutableConfig
 from data_juicer.planner.optimize.directives.base import Directive, DirectiveResult
+from data_juicer.planner.optimize.op_locator import ProcessIndex
+
+if TYPE_CHECKING:
+    pass
 
 
 def _is_effective_noop(op_name: str, params: Dict[str, Any]) -> bool:
@@ -37,7 +40,7 @@ def _is_effective_noop(op_name: str, params: Dict[str, Any]) -> bool:
 
 def _find_duplicate_operators(process: List[Dict[str, Any]]) -> Set[int]:
     """Find indices of duplicate operators (same name and params)."""
-    seen: Dict[str, int] = {}
+    seen: Dict[tuple, int] = {}
     duplicates: Set[int] = set()
 
     for i, step in enumerate(process):
@@ -58,17 +61,33 @@ def _find_duplicate_operators(process: List[Dict[str, Any]]) -> Set[int]:
 
 
 class RemoveRedundantOpDirective(Directive):
-    """Remove redundant operators: duplicates, no-ops, and ineffective steps."""
+    """
+    Remove redundant operators: duplicates, no-ops, and ineffective steps.
+
+    This directive cleans up the pipeline by removing:
+    - Duplicate operators (same type and params)
+    - No-op operators that don't filter anything
+    """
 
     name = "remove_redundant_ops"
 
     def __init__(self, remove_duplicates: bool = True, remove_noops: bool = True) -> None:
+        """
+        Args:
+            remove_duplicates: Whether to remove duplicate operators
+            remove_noops: Whether to remove no-op operators
+        """
         self.remove_duplicates = remove_duplicates
         self.remove_noops = remove_noops
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
         proc = before.get("process")
+
         if not isinstance(proc, list) or not proc:
             return DirectiveResult(
                 ok=True,
@@ -79,7 +98,6 @@ class RemoveRedundantOpDirective(Directive):
                 config_after=before,
             )
 
-        after = deepcopy(before)
         original_count = len(proc)
 
         # Find indices to remove
@@ -109,8 +127,14 @@ class RemoveRedundantOpDirective(Directive):
                 config_after=before,
             )
 
-        # Build new process list
+        # Build new process list and track removed identity hashes
+        removed_hashes = []
+        for i in sorted(to_remove):
+            if i < len(index.identities):
+                removed_hashes.append(index.identities[i].identity_hash)
+
         new_proc = [step for i, step in enumerate(proc) if i not in to_remove]
+        after = self._clone(before)
         after["process"] = new_proc
 
         removed_count = original_count - len(new_proc)
@@ -122,7 +146,7 @@ class RemoveRedundantOpDirective(Directive):
             config_before=before,
             config_after=after,
             details={
-                "removed_indices": sorted(to_remove),
                 "removed_count": removed_count,
+                "removed_identity_hashes": removed_hashes,
             },
         )

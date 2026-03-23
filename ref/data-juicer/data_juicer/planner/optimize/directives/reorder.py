@@ -3,12 +3,17 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from data_juicer.tools.op_search import OPSearcher
 
 from data_juicer.planner.contracts.recipe import DJExecutableConfig
 from data_juicer.planner.optimize.directives.base import Directive, DirectiveResult
+from data_juicer.planner.optimize.op_locator import ProcessIndex
+
+if TYPE_CHECKING:
+    pass
+
 
 # Lower runs earlier
 _TYPE_PRIORITY: Dict[str, int] = {
@@ -27,6 +32,7 @@ _TYPE_CACHE: Dict[str, str] = {}
 
 
 def _op_type(name: str) -> str:
+    """Get the type of an operator by name."""
     if name in _TYPE_CACHE:
         return _TYPE_CACHE[name]
     searcher = OPSearcher(specified_op_list=[name])
@@ -39,13 +45,26 @@ def _op_type(name: str) -> str:
 
 
 class ReorderFiltersFirstDirective(Directive):
-    """Sort ``process`` steps by coarse operator type priority (filters first)."""
+    """
+    Sort process steps by coarse operator type priority (filters first).
+
+    This directive reorders the entire pipeline, moving filter-type
+    operators before mapper-type operators to reduce downstream data volume.
+
+    Note: This is a heuristic optimization and does not consider field
+    dependencies. Use with caution when filters depend on mapper outputs.
+    """
 
     name = "reorder_filters_first"
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
         before = self._clone(cfg)
         proc = before.get("process")
+
         if not isinstance(proc, list) or len(proc) < 2:
             return DirectiveResult(
                 ok=True,
@@ -56,6 +75,7 @@ class ReorderFiltersFirstDirective(Directive):
                 config_after=before,
             )
 
+        # Build indexed list with priorities
         indexed: List[tuple[int, int, Dict[str, Any]]] = []
         for i, step in enumerate(proc):
             if not isinstance(step, dict) or len(step) != 1:
@@ -75,10 +95,12 @@ class ReorderFiltersFirstDirective(Directive):
                 config_after=before,
             )
 
+        # Sort by priority (then by original index for stability)
         indexed.sort(key=lambda x: (x[0], x[1]))
         new_proc = [x[2] for x in indexed]
         after = self._clone(before)
         after["process"] = new_proc
+
         changed = new_proc != proc
         return DirectiveResult(
             ok=True,
@@ -87,5 +109,8 @@ class ReorderFiltersFirstDirective(Directive):
             message="reordered by type priority" if changed else "already ordered",
             config_before=before,
             config_after=after,
-            details={"priorities": [(x[2], x[0]) for x in indexed]},
+            details={
+                "priorities": [(x[2], x[0]) for x in indexed],
+                "order_before": [index.identities[i].identity_hash for i in range(len(index.identities))],
+            },
         )

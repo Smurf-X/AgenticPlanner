@@ -6,6 +6,7 @@ This module provides:
 - Search-based optimization (Stage 2)
 - Evaluation with LLM-as-a-judge
 - Cost tracking and quality scoring
+- Stable operator location via OpLocator
 """
 
 from data_juicer.planner.optimize.directive_engine import (
@@ -41,7 +42,13 @@ from data_juicer.planner.optimize.executor_adapter import (
     create_real_adapter,
     create_stub_adapter,
 )
+from data_juicer.planner.optimize.op_locator import (
+    OpIdentity,
+    OpLocator,
+    ProcessIndex,
+)
 from data_juicer.planner.optimize.optimization_config import (
+    CONFIG_TEMPLATE,
     DEFAULT_DIRECTIVE_ONLY_CONFIG,
     DEFAULT_FULL_CONFIG,
     DEFAULT_INFERENCE_CONFIG,
@@ -50,14 +57,13 @@ from data_juicer.planner.optimize.optimization_config import (
     LLMConfig,
     OptimizationConfig,
     PriceTable,
-    CONFIG_TEMPLATE,
     create_sample_config_file,
     load_config,
 )
 from data_juicer.planner.optimize.runner import (
+    OptimizationRunMode,
     OptimizationRunner,
     OptimizationRunnerResult,
-    OptimizationRunMode,
 )
 from data_juicer.planner.optimize.search import (
     BaseSearchStrategy,
@@ -82,6 +88,10 @@ __all__ = [
     "OptimizationRunner",
     "OptimizationRunnerResult",
     "PipelineEvaluator",
+    # Operator location
+    "OpIdentity",
+    "OpLocator",
+    "ProcessIndex",
     # Directive engine
     "DirectiveEngine",
     "DirectiveEngineConfig",

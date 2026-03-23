@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 
 from data_juicer.planner.contracts.recipe import DJExecutableConfig
 from data_juicer.planner.optimize.directives.base import Directive, DirectiveResult
+from data_juicer.planner.optimize.op_locator import OpLocator, ProcessIndex
 
 
 # Operators that support gleaning
@@ -25,52 +26,52 @@ class AddGleaningDirective(Directive):
 
     Gleaning enables multi-turn verification where the LLM can
     refine its output through additional passes.
+
+    Uses OpLocator for stable identification.
     """
 
     name = "add_gleaning"
 
     def __init__(
         self,
-        op_index: int,
+        locator: OpLocator,
         max_rounds: int = 2,
         gleaning_prompt: Optional[str] = None,
     ) -> None:
         """
         Args:
-            op_index: Index of the operator in the process list
+            locator: Locator for the target operator
             max_rounds: Maximum number of gleaning rounds (default: 2)
             gleaning_prompt: Custom prompt for gleaning verification
         """
-        self.op_index = op_index
+        self.locator = locator
         self.max_rounds = max(1, min(max_rounds, 5))
         self.gleaning_prompt = gleaning_prompt
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
-        proc = before.get("process")
-        if not isinstance(proc, list):
-            return DirectiveResult(
-                ok=True,
-                applied=False,
-                directive_name=self.name,
-                message="no process",
-                config_before=before,
-                config_after=before,
-            )
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
 
-        if self.op_index < 0 or self.op_index >= len(proc):
+        # Find target operator
+        target_idx = self.locator.find_index(index.identities)
+        if target_idx is None:
             return DirectiveResult(
                 ok=False,
                 applied=False,
                 directive_name=self.name,
-                message=f"invalid op_index {self.op_index}",
+                message="target operator not found",
                 config_before=before,
                 config_after=before,
             )
 
-        after = deepcopy(before)
-        step = after["process"][self.op_index]
-        if not isinstance(step, dict) or len(step) != 1:
+        after = self._clone(before)
+        step = after["process"][target_idx]
+
+        op_name, params = self._get_op_params(step)
+        if op_name is None:
             return DirectiveResult(
                 ok=True,
                 applied=False,
@@ -80,11 +81,6 @@ class AddGleaningDirective(Directive):
                 config_after=before,
             )
 
-        op_name = next(iter(step.keys()))
-        params = step.get(op_name, {})
-        if not isinstance(params, dict):
-            params = {}
-
         # Check if gleaning is supported for this operator
         if op_name not in _GLEANING_SUPPORTED_OPS:
             return DirectiveResult(
@@ -93,7 +89,7 @@ class AddGleaningDirective(Directive):
                 directive_name=self.name,
                 message=f"gleaning not supported for {op_name}",
                 config_before=before,
-                config_after=before,
+                config_after=after,
             )
 
         # Check if gleaning already enabled
@@ -104,7 +100,7 @@ class AddGleaningDirective(Directive):
                 directive_name=self.name,
                 message="gleaning already enabled",
                 config_before=before,
-                config_after=before,
+                config_after=after,
             )
 
         new_params = dict(params)
@@ -113,7 +109,9 @@ class AddGleaningDirective(Directive):
         if self.gleaning_prompt:
             new_params["gleaning_prompt"] = self.gleaning_prompt
 
-        after["process"][self.op_index] = {op_name: new_params}
+        after["process"][target_idx] = {op_name: new_params}
+
+        identity = index.get_by_index(target_idx)
 
         return DirectiveResult(
             ok=True,
@@ -123,47 +121,53 @@ class AddGleaningDirective(Directive):
             config_before=before,
             config_after=after,
             details={
-                "op_index": self.op_index,
-                "op_name": op_name,
+                "identity_hash": identity.identity_hash if identity else None,
+                "op_type": op_name,
                 "max_rounds": self.max_rounds,
             },
         )
 
 
 class RemoveGleaningDirective(Directive):
-    """Remove gleaning from an LLM-based operator (for cost optimization)."""
+    """
+    Remove gleaning from an LLM-based operator (for cost optimization).
+
+    Uses OpLocator for stable identification.
+    """
 
     name = "remove_gleaning"
 
-    def __init__(self, op_index: int) -> None:
-        self.op_index = op_index
+    def __init__(self, locator: OpLocator) -> None:
+        """
+        Args:
+            locator: Locator for the target operator
+        """
+        self.locator = locator
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
-        proc = before.get("process")
-        if not isinstance(proc, list):
-            return DirectiveResult(
-                ok=True,
-                applied=False,
-                directive_name=self.name,
-                message="no process",
-                config_before=before,
-                config_after=before,
-            )
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
 
-        if self.op_index < 0 or self.op_index >= len(proc):
+        # Find target operator
+        target_idx = self.locator.find_index(index.identities)
+        if target_idx is None:
             return DirectiveResult(
                 ok=False,
                 applied=False,
                 directive_name=self.name,
-                message=f"invalid op_index {self.op_index}",
+                message="target operator not found",
                 config_before=before,
                 config_after=before,
             )
 
-        after = deepcopy(before)
-        step = after["process"][self.op_index]
-        if not isinstance(step, dict) or len(step) != 1:
+        after = self._clone(before)
+        step = after["process"][target_idx]
+
+        op_name, params = self._get_op_params(step)
+        if op_name is None:
             return DirectiveResult(
                 ok=True,
                 applied=False,
@@ -173,11 +177,6 @@ class RemoveGleaningDirective(Directive):
                 config_after=before,
             )
 
-        op_name = next(iter(step.keys()))
-        params = step.get(op_name, {})
-        if not isinstance(params, dict):
-            params = {}
-
         if params.get("max_rounds", 1) <= 1:
             return DirectiveResult(
                 ok=True,
@@ -185,14 +184,16 @@ class RemoveGleaningDirective(Directive):
                 directive_name=self.name,
                 message="gleaning not enabled",
                 config_before=before,
-                config_after=before,
+                config_after=after,
             )
 
         new_params = dict(params)
         new_params["max_rounds"] = 1
         new_params.pop("gleaning_prompt", None)
 
-        after["process"][self.op_index] = {op_name: new_params}
+        after["process"][target_idx] = {op_name: new_params}
+
+        identity = index.get_by_index(target_idx)
 
         return DirectiveResult(
             ok=True,
@@ -201,5 +202,8 @@ class RemoveGleaningDirective(Directive):
             message=f"removed gleaning from {op_name}",
             config_before=before,
             config_after=after,
-            details={"op_index": self.op_index, "op_name": op_name},
+            details={
+                "identity_hash": identity.identity_hash if identity else None,
+                "op_type": op_name,
+            },
         )

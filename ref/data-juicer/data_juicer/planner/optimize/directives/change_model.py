@@ -3,18 +3,21 @@
 Model change directives for LLM-based operators.
 
 Provides fine-grained control over model replacement:
-1. SwapSingleOpModelDirective - Replace model for a specific operator
+1. SwapSingleOpModelDirective - Replace model for a specific operator by locator
 2. SwapModelByTypeDirective - Replace models by operator type
-3. SwapApiModelDirective - Global replacement (legacy, kept for compatibility)
+3. SwapApiModelDirective - Global replacement (use with caution)
 """
 
 from __future__ import annotations
 
-from copy import deepcopy
-from typing import Any, Dict, List, MutableMapping, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, MutableMapping, Optional, Set
 
 from data_juicer.planner.contracts.recipe import DJExecutableConfig
 from data_juicer.planner.optimize.directives.base import Directive, DirectiveResult
+from data_juicer.planner.optimize.op_locator import OpLocator, ProcessIndex
+
+if TYPE_CHECKING:
+    pass
 
 
 # Model information for LLM-based recommendation
@@ -54,24 +57,9 @@ def _replace_model_in_dict(
     return changed
 
 
-def _get_op_name(step: Dict[str, Any]) -> Optional[str]:
-    """Get operator name from a process step."""
-    if not isinstance(step, dict) or len(step) != 1:
-        return None
-    return next(iter(step.keys()), None)
-
-
-def _get_op_params(step: Dict[str, Any]) -> Dict[str, Any]:
-    """Get operator params from a process step."""
-    if not isinstance(step, dict) or len(step) != 1:
-        return {}
-    params = next(iter(step.values()), {})
-    return params if isinstance(params, dict) else {}
-
-
 class SwapSingleOpModelDirective(Directive):
     """
-    Replace model for a specific operator by name.
+    Replace model for a specific operator using OpLocator.
 
     This is the recommended directive for fine-grained model control.
     """
@@ -80,66 +68,77 @@ class SwapSingleOpModelDirective(Directive):
 
     def __init__(
         self,
-        op_name: str,
+        locator: OpLocator,
         from_model: str,
         to_model: str,
         model_keys: tuple[str, ...] = ("api_model", "model"),
     ) -> None:
         """
         Args:
-            op_name: Name of the operator to modify (e.g., "llm_filter")
+            locator: Locator for the target operator
             from_model: Source model name (only replace if matches)
             to_model: Target model name
             model_keys: Parameter keys that contain model name
         """
-        self.op_name = op_name
+        self.locator = locator
         self.from_model = from_model
         self.to_model = to_model
         self.model_keys = model_keys
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
-        proc = before.get("process")
-        if not isinstance(proc, list):
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
+
+        # Find target operator
+        target_idx = self.locator.find_index(index.identities)
+        if target_idx is None:
             return DirectiveResult(
-                ok=True,
+                ok=False,
                 applied=False,
                 directive_name=self.name,
-                message="no process",
+                message="target operator not found",
                 config_before=before,
                 config_after=before,
             )
 
-        after = deepcopy(before)
+        after = self._clone(before)
+        step = after["process"][target_idx]
+
+        op_name, params = self._get_op_params(step)
+        if op_name is None:
+            return DirectiveResult(
+                ok=True,
+                applied=False,
+                directive_name=self.name,
+                message="invalid step format",
+                config_before=before,
+                config_after=after,
+            )
+
         changed = False
-        changes: List[Dict[str, Any]] = []
+        for key in self.model_keys:
+            if key in params and params[key] == self.from_model:
+                params[key] = self.to_model
+                changed = True
 
-        for i, step in enumerate(after.get("process", [])):
-            op_name = _get_op_name(step)
-            if op_name != self.op_name:
-                continue
+        after["process"][target_idx] = {op_name: params}
 
-            params = _get_op_params(step)
-            for key in self.model_keys:
-                if key in params and params[key] == self.from_model:
-                    params[key] = self.to_model
-                    changed = True
-                    changes.append({
-                        "index": i,
-                        "op_name": op_name,
-                        "key": key,
-                        "old": self.from_model,
-                        "new": self.to_model,
-                    })
+        identity = index.get_by_index(target_idx)
 
         return DirectiveResult(
             ok=True,
             applied=changed,
             directive_name=self.name,
-            message=f"changed {len(changes)} model(s) in {self.op_name}" if changed else f"no matching operator or model",
+            message=f"{self.from_model} -> {self.to_model}" if changed else "no matching model",
             config_before=before,
             config_after=after,
-            details={"changes": changes},
+            details={
+                "identity_hash": identity.identity_hash if identity else None,
+                "op_type": op_name,
+            },
         )
 
 
@@ -151,13 +150,6 @@ class SwapModelByTypeDirective(Directive):
     """
 
     name = "swap_model_by_type"
-
-    # Operator types that typically use LLM
-    LLM_OP_TYPES = {
-        "mapper",
-        "filter",
-        "aggregator",
-    }
 
     def __init__(
         self,
@@ -180,7 +172,6 @@ class SwapModelByTypeDirective(Directive):
 
     def _get_op_type(self, op_name: str) -> str:
         """Get operator type from name or registry."""
-        # Try to get from registry
         from data_juicer.tools.op_search import OPSearcher
         try:
             searcher = OPSearcher(specified_op_list=[op_name])
@@ -192,47 +183,37 @@ class SwapModelByTypeDirective(Directive):
         for t in ["filter", "mapper", "deduplicator", "selector", "aggregator"]:
             if t in op_name.lower():
                 return t
-        return "mapper"  # Default
+        return "mapper"
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
-        proc = before.get("process")
-        if not isinstance(proc, list):
-            return DirectiveResult(
-                ok=True,
-                applied=False,
-                directive_name=self.name,
-                message="no process",
-                config_before=before,
-                config_after=before,
-            )
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
 
-        after = deepcopy(before)
+        after = self._clone(before)
         changed = False
         changes: List[Dict[str, Any]] = []
 
-        for i, step in enumerate(after.get("process", [])):
-            op_name = _get_op_name(step)
-            if not op_name:
-                continue
+        for i, step in enumerate(after["process"]):
+            op_name, params = self._get_op_params(step)
 
             # Check if this operator matches the target type
             op_type = self._get_op_type(op_name)
             if op_type != self.op_type:
                 continue
 
-            params = _get_op_params(step)
             for key in self.model_keys:
                 if key in params and params[key] == self.from_model:
                     params[key] = self.to_model
                     changed = True
                     changes.append({
-                        "index": i,
-                        "op_name": op_name,
-                        "op_type": op_type,
-                        "old": self.from_model,
-                        "new": self.to_model,
+                        "identity_hash": index.identities[i].identity_hash if i < len(index.identities) else None,
+                        "op_type": op_name,
                     })
+
+            after["process"][i] = {op_name: params}
 
         return DirectiveResult(
             ok=True,
@@ -250,8 +231,7 @@ class SwapApiModelDirective(Directive):
     Global model replacement for ALL operators matching the source model.
 
     WARNING: This replaces models across all operators. Use with caution.
-    Consider using SwapSingleOpModelDirective or SwapModelByTypeDirective
-    for finer control.
+    Consider using SwapSingleOpModelDirective for finer control.
     """
 
     name = "swap_api_model"
@@ -272,20 +252,14 @@ class SwapApiModelDirective(Directive):
         self.to_model = to_model
         self.model_keys = model_keys
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
-        proc = before.get("process")
-        if not isinstance(proc, list):
-            return DirectiveResult(
-                ok=True,
-                applied=False,
-                directive_name=self.name,
-                message="no process",
-                config_before=before,
-                config_after=before,
-            )
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
 
-        after = deepcopy(before)
+        after = self._clone(before)
         changed = _replace_model_in_dict(
             after.get("process", []),
             self.from_model,
@@ -315,19 +289,19 @@ class LLMChangeModelDirective(Directive):
 
     def __init__(
         self,
-        op_name: str,
+        locator: OpLocator,
         allowed_models: List[str],
-        optimize_goal: str = "balanced",  # "cost", "quality", "balanced"
+        optimize_goal: str = "balanced",
         llm_client: Optional[Any] = None,
     ) -> None:
         """
         Args:
-            op_name: Name of the operator to modify
+            locator: Locator for the target operator
             allowed_models: List of allowed model choices
-            optimize_goal: Optimization objective
+            optimize_goal: Optimization objective ("cost", "quality", "balanced")
             llm_client: LLM client for making recommendations
         """
-        self.op_name = op_name
+        self.locator = locator
         self.allowed_models = allowed_models
         self.optimize_goal = optimize_goal
         self._llm_client = llm_client
@@ -336,10 +310,7 @@ class LLMChangeModelDirective(Directive):
         """Set the LLM client."""
         self._llm_client = client
 
-    def _get_recommendation(
-        self,
-        op_config: Dict[str, Any],
-    ) -> Optional[str]:
+    def _get_recommendation(self, op_config: Dict[str, Any]) -> Optional[str]:
         """Use LLM to recommend a model."""
         if not self._llm_client:
             return None
@@ -371,7 +342,6 @@ Return ONLY a JSON object with one field:
                 user_prompt=prompt,
                 temperature=0.1,
             )
-            # Parse response
             text = response.strip()
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0]
@@ -385,45 +355,44 @@ Return ONLY a JSON object with one field:
             pass
         return None
 
-    def apply(self, cfg: DJExecutableConfig) -> DirectiveResult:
-        before = deepcopy(cfg)
-        proc = before.get("process")
-        if not isinstance(proc, list):
+    def apply_with_index(
+        self,
+        cfg: DJExecutableConfig,
+        index: ProcessIndex,
+    ) -> DirectiveResult:
+        before = self._clone(cfg)
+
+        # Find target operator
+        target_idx = self.locator.find_index(index.identities)
+        if target_idx is None:
             return DirectiveResult(
                 ok=False,
                 applied=False,
                 directive_name=self.name,
-                message="no process",
+                message="target operator not found",
                 config_before=before,
                 config_after=before,
             )
 
-        # Find the target operator
-        target_step = None
-        target_index = -1
-        for i, step in enumerate(proc):
-            op_name = _get_op_name(step)
-            if op_name == self.op_name:
-                target_step = step
-                target_index = i
-                break
+        after = self._clone(before)
+        step = after["process"][target_idx]
 
-        if target_step is None:
+        op_name, params = self._get_op_params(step)
+        if op_name is None:
             return DirectiveResult(
                 ok=False,
                 applied=False,
                 directive_name=self.name,
-                message=f"operator {self.op_name} not found",
+                message="invalid step format",
                 config_before=before,
                 config_after=before,
             )
 
         # Get current model
-        params = _get_op_params(target_step)
         current_model = params.get("model") or params.get("api_model")
 
         # Get LLM recommendation
-        recommended_model = self._get_recommendation(target_step)
+        recommended_model = self._get_recommendation(step)
 
         if not recommended_model:
             return DirectiveResult(
@@ -442,12 +411,15 @@ Return ONLY a JSON object with one field:
                 directive_name=self.name,
                 message="LLM recommends keeping current model",
                 config_before=before,
-                config_after=before,
+                config_after=after,
             )
 
         # Apply the change
-        after = deepcopy(before)
-        after["process"][target_index][self.op_name]["model"] = recommended_model
+        new_params = dict(params)
+        new_params["model"] = recommended_model
+        after["process"][target_idx] = {op_name: new_params}
+
+        identity = index.get_by_index(target_idx)
 
         return DirectiveResult(
             ok=True,
@@ -457,6 +429,7 @@ Return ONLY a JSON object with one field:
             config_before=before,
             config_after=after,
             details={
+                "identity_hash": identity.identity_hash if identity else None,
                 "recommended_model": recommended_model,
                 "optimize_goal": self.optimize_goal,
             },
