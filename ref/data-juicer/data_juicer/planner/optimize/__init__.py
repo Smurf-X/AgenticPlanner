@@ -59,10 +59,21 @@ from data_juicer.planner.optimize.runner import (
     OptimizationRunnerResult,
     OptimizationRunMode,
 )
-from data_juicer.planner.optimize.search.beam import (
+from data_juicer.planner.optimize.search import (
+    BaseSearchStrategy,
     BeamSearchConfig,
     BeamSearchOptimizer,
-    CandidateRecord,
+    BeamSearchStrategy,
+    GreedySearchConfig,
+    GreedySearchStrategy,
+    OptimizationObjective,
+    RandomSearchConfig,
+    RandomSearchStrategy,
+    SearchConfig,
+    SearchReport,
+    SearchResult,
+    SearchStrategyType,
+    create_search_strategy,
 )
 
 __all__ = [
@@ -111,8 +122,22 @@ __all__ = [
     "DEFAULT_FULL_CONFIG",
     "DEFAULT_INFERENCE_CONFIG",
     "DEFAULT_SEARCH_CONFIG",
-    # Search
+    # Search - base types
+    "BaseSearchStrategy",
+    "OptimizationObjective",
+    "SearchConfig",
+    "SearchReport",
+    "SearchResult",
+    "SearchStrategyType",
+    "create_search_strategy",
+    # Search - greedy
+    "GreedySearchConfig",
+    "GreedySearchStrategy",
+    # Search - random
+    "RandomSearchConfig",
+    "RandomSearchStrategy",
+    # Search - beam
     "BeamSearchConfig",
     "BeamSearchOptimizer",
-    "CandidateRecord",
+    "BeamSearchStrategy",
 ]
