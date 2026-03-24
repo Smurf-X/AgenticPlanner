@@ -300,14 +300,16 @@ class RealPipelineEvaluator(BaseEvaluator):
 
         try:
             # Run pipeline on sample
+            from data_juicer.planner.optimize.executor_adapter import SampleExecutionResult
+            
             exec_result = self._executor_adapter.run_sample(
                 cfg,
                 sample_size=self.eval_config.sample_size,
                 random_seed=self.eval_config.random_seed,
             )
 
-            if not exec_result.get("ok", False):
-                errors.append("Pipeline execution failed")
+            if not exec_result.ok:
+                errors.extend(exec_result.errors)
                 return EvaluationResult(
                     cost=cost,
                     quality=0.0,
@@ -317,11 +319,11 @@ class RealPipelineEvaluator(BaseEvaluator):
                     errors=errors,
                 )
 
-            inputs = exec_result.get("inputs", [])
-            outputs = exec_result.get("outputs", [])
+            inputs = exec_result.inputs
+            outputs = exec_result.outputs
 
             # Collect cost metrics
-            token_usage = exec_result.get("token_usage", {})
+            token_usage = exec_result.token_usage
             cost.prompt_tokens = token_usage.get("prompt_tokens", 0)
             cost.completion_tokens = token_usage.get("completion_tokens", 0)
             cost.model_usage = token_usage.get("model_usage", {})
@@ -330,7 +332,7 @@ class RealPipelineEvaluator(BaseEvaluator):
             # Evaluate quality
             if self.eval_config.mode == EvaluationMode.WITH_GROUND_TRUTH:
                 gt_key = self.eval_config.ground_truth_key or ""
-                ground_truths = exec_result.get("ground_truths", [])
+                ground_truths = exec_result.ground_truths
                 eval_results = self._judge_evaluator.evaluate_with_ground_truth(
                     outputs, ground_truths, gt_key
                 )

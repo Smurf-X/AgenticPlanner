@@ -178,7 +178,6 @@ class StubExecutorAdapter(ExecutorAdapter):
         # Load and sample data
         data = self.load_dataset()
         if not data:
-            # Use dataset_path from config if available
             cfg_path = cfg.get("dataset_path")
             if cfg_path:
                 data = self.load_dataset(cfg_path)
@@ -206,10 +205,8 @@ class StubExecutorAdapter(ExecutorAdapter):
 
                 # Simulate some operators
                 if "filter" in op_name:
-                    # Keep the record (stub always passes)
                     pass
                 elif "mapper" in op_name or "map" in op_name:
-                    # Add a processed field
                     out["_processed"] = True
                 elif "deduplicator" in op_name or "dedup" in op_name:
                     out["_dedup_key"] = hash(str(inp)) % 10000
@@ -219,12 +216,10 @@ class StubExecutorAdapter(ExecutorAdapter):
 
             outputs.append(out)
 
-        # Load ground truth if available
         ground_truths = self.load_ground_truth() if self._ground_truth_path else []
 
-        # Generate fake token usage
         token_usage = {
-            "prompt_tokens": len(samples) * 100,  # Fake tokens
+            "prompt_tokens": len(samples) * 100,
             "completion_tokens": len(samples) * 50,
             "model_usage": {
                 "gpt-4o-mini": {
@@ -326,7 +321,7 @@ class DJExecutorAdapter(ExecutorAdapter):
                 exec_cfg["dataset_path"] = str(sample_path)
                 exec_cfg["export_path"] = str(Path(tmpdir) / "output.jsonl")
 
-                # Run the pipeline
+                # Run the pipeline using real DJ executor
                 outputs, token_usage = self._run_pipeline(exec_cfg, tmpdir)
 
             # Load ground truth
@@ -357,22 +352,38 @@ class DJExecutorAdapter(ExecutorAdapter):
         work_dir: str,
     ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """
-        Execute the pipeline and collect results.
+        Execute the pipeline using real Data-Juicer executor.
 
-        Override this method to integrate with actual DJ executor.
+        This method integrates with the actual DJ execution engine.
         """
-        # This is a placeholder for actual DJ integration
-        # In production, this would call data_juicer.core.executor
+        from data_juicer.config import init_configs
+        from data_juicer.core import DefaultExecutor
 
         output_path = Path(cfg.get("export_path", ""))
 
-        # For now, return stub results
-        # Real implementation would:
-        # 1. from data_juicer.core.executor import Executor
-        # 2. executor = Executor(cfg)
-        # 3. executor.run()
-        # 4. Collect token usage from tracer
+        # Build command line args for init_configs
+        # Write config to temp file
+        import yaml
 
+        config_path = Path(work_dir) / "pipeline_config.yaml"
+        with config_path.open("w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
+
+        try:
+            # Initialize DJ config
+            args = ["--config", str(config_path)]
+            dj_cfg = init_configs(args=args)
+
+            # Create and run executor
+            executor = DefaultExecutor(dj_cfg)
+            executor.run(skip_return=True)
+
+        except Exception as e:
+            # If DJ execution fails, log and return empty results
+            print(f"DJ execution error: {e}")
+            return [], {"prompt_tokens": 0, "completion_tokens": 0, "model_usage": {}}
+
+        # Collect outputs
         outputs = []
         if output_path.exists():
             with output_path.open("r", encoding="utf-8") as f:
@@ -380,6 +391,8 @@ class DJExecutorAdapter(ExecutorAdapter):
                     if line.strip():
                         outputs.append(json.loads(line))
 
+        # TODO: Collect actual token usage from DJ tracer
+        # For now, return placeholder
         token_usage = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
