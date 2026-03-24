@@ -18,6 +18,9 @@ Usage:
     result = optimizer.run(config)
 """
 
+__version__ = "0.1.0"
+
+# Contracts
 from agentic_planner.contracts.recipe import (
     DJExecutableConfig,
     load_executable_config,
@@ -32,8 +35,83 @@ from agentic_planner.contracts.eval_protocol import (
     EvalConfig,
     EvaluationMode,
 )
+from agentic_planner.contracts.plan_bridge import (
+    OperatorStep,
+    plan_operators_to_process,
+    process_to_plan_operators,
+)
+
+# Generator
+from agentic_planner.generator import (
+    NLRecipeGenerator,
+    OpenAICompatibleJsonClient,
+    assemble_executable_config,
+    build_operator_catalog_text,
+    build_operator_detail_text,
+    generate_recipe_from_llm_json_text,
+)
+
+# Optimizer - Core
+from agentic_planner.optimizer.op_locator import (
+    OpIdentity,
+    OpLocator,
+    ProcessIndex,
+)
+from agentic_planner.optimizer.directive_engine import (
+    DirectiveEngine,
+    DirectiveEngineConfig,
+    DirectiveEngineMode,
+    DirectiveEngineRun,
+    apply_static_directives,
+)
+from agentic_planner.optimizer.optimization_config import (
+    OptimizationConfig,
+    ExecutionConfig,
+    LLMConfig,
+    PriceTable,
+    load_config,
+)
+from agentic_planner.optimizer.runner import (
+    OptimizationRunner,
+    OptimizationRunnerResult,
+    OptimizationRunMode,
+)
+
+# Optimizer - Directives
+from agentic_planner.optimizer.directives import (
+    Directive,
+    DirectiveResult,
+    DIRECTIVE_REGISTRY,
+    register_directive,
+    get_directive,
+    list_directive_names,
+    ReorderFiltersFirstDirective,
+    RemoveRedundantOpDirective,
+    TightenFiltersDirective,
+    LoosenFiltersDirective,
+    BumpMinLenDirective,
+)
+
+# Optimizer - Search
+from agentic_planner.optimizer.search import (
+    BaseSearchStrategy,
+    OptimizationObjective,
+    SearchConfig,
+    SearchReport,
+    SearchResult,
+    SearchStrategyType,
+    GreedySearchConfig,
+    GreedySearchStrategy,
+    RandomSearchConfig,
+    RandomSearchStrategy,
+    BeamSearchConfig,
+    BeamSearchStrategy,
+    create_search_strategy,
+)
 
 __all__ = [
+    # Version
+    "__version__",
     # Contracts
     "DJExecutableConfig",
     "load_executable_config",
@@ -43,22 +121,57 @@ __all__ = [
     "compute_token_cost",
     "EvalConfig",
     "EvaluationMode",
-    # Generator (lazy import to avoid circular deps)
-    # "PipelineGenerator",
-    # Optimizer (lazy import)
-    # "PipelineOptimizer",
+    "OperatorStep",
+    "plan_operators_to_process",
+    "process_to_plan_operators",
+    # Generator
+    "NLRecipeGenerator",
+    "OpenAICompatibleJsonClient",
+    "assemble_executable_config",
+    "build_operator_catalog_text",
+    "build_operator_detail_text",
+    "generate_recipe_from_llm_json_text",
+    # Optimizer - Core
+    "OpIdentity",
+    "OpLocator",
+    "ProcessIndex",
+    "DirectiveEngine",
+    "DirectiveEngineConfig",
+    "DirectiveEngineMode",
+    "DirectiveEngineRun",
+    "apply_static_directives",
+    "OptimizationConfig",
+    "ExecutionConfig",
+    "LLMConfig",
+    "PriceTable",
+    "load_config",
+    "OptimizationRunner",
+    "OptimizationRunnerResult",
+    "OptimizationRunMode",
+    # Optimizer - Directives
+    "Directive",
+    "DirectiveResult",
+    "DIRECTIVE_REGISTRY",
+    "register_directive",
+    "get_directive",
+    "list_directive_names",
+    "ReorderFiltersFirstDirective",
+    "RemoveRedundantOpDirective",
+    "TightenFiltersDirective",
+    "LoosenFiltersDirective",
+    "BumpMinLenDirective",
+    # Optimizer - Search
+    "BaseSearchStrategy",
+    "OptimizationObjective",
+    "SearchConfig",
+    "SearchReport",
+    "SearchResult",
+    "SearchStrategyType",
+    "GreedySearchConfig",
+    "GreedySearchStrategy",
+    "RandomSearchConfig",
+    "RandomSearchStrategy",
+    "BeamSearchConfig",
+    "BeamSearchStrategy",
+    "create_search_strategy",
 ]
-
-__version__ = "0.1.0"
-
-
-def get_generator():
-    """Lazy import for generator."""
-    from agentic_planner.generator import PipelineGenerator
-    return PipelineGenerator
-
-
-def get_optimizer():
-    """Lazy import for optimizer."""
-    from agentic_planner.optimizer import PipelineOptimizer
-    return PipelineOptimizer
