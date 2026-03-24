@@ -14,9 +14,9 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from agentic_planner.contracts.recipe import DJExecutableConfig, validate_executable_config
-from agentic_planner.optimizer.directives.registry import DIRECTIVE_REGISTRY
-from agentic_planner.optimizer.search.base import (
+from data_juicer.planner.contracts.recipe import DJExecutableConfig, validate_executable_config
+from data_juicer.planner.optimize.directives.registry import DIRECTIVE_REGISTRY
+from data_juicer.planner.optimize.search.base import (
     BaseSearchStrategy,
     SearchConfig,
     SearchReport,
